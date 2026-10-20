@@ -37,6 +37,9 @@ class Settings(BaseSettings):
                                         pattern=r"^[A-Za-z0-9_-]+$")
     vision_model: str = ""
     reranker_model: str = ""
+    reranker_provider: str = "local"
+    reranker_api_url: str = ""
+    reranker_api_key: str = ""
     ocr_enabled: bool = False
     chunk_size: int = Field(default=800, ge=100, le=10000)
     chunk_overlap: int = Field(default=120, ge=0)
@@ -73,6 +76,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_runtime(self):
+        if self.reranker_provider not in {"local", "dashscope"}:
+            raise ValueError("reranker_provider must be local or dashscope")
+        if self.reranker_model and self.reranker_provider == "dashscope":
+            if not self.reranker_api_url.startswith("https://"):
+                raise ValueError("DashScope reranking requires an HTTPS RAG_RERANKER_API_URL")
+            if not (self.reranker_api_key or self.llm_api_key):
+                raise ValueError("DashScope reranking requires RAG_RERANKER_API_KEY or RAG_LLM_API_KEY")
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
         if self.ollama_num_ctx <= self.max_output_tokens + 2048:

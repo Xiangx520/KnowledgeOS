@@ -24,7 +24,8 @@ def _key(question: str, chunks: list[dict], top_k: int, mode: str, history: list
     digest = hashlib.sha256()
     digest.update(json.dumps([question.strip(), top_k, mode, s.embedding_provider, s.embedding_model,
         s.llm_base_url, s.llm_model, s.llm_provider, s.embedding_base_url,
-        bool(s.llm_api_key), s.reranker_model, s.citation_verifier, s.verifier_model,
+        bool(s.llm_api_key), s.reranker_model, s.reranker_provider, s.reranker_api_url,
+        s.citation_verifier, s.verifier_model,
         s.evidence_min_coverage, PROMPT_VERSION, history or []], ensure_ascii=False).encode())
     if hasattr(chunks, "fingerprint"):
         digest.update(chunks.fingerprint().encode())
@@ -247,7 +248,7 @@ def answer_question(question: str, chunks: list[dict], top_k: int = 5, mode: str
         with stage("rerank", timings):
             candidates = rerank_candidates(retrieval_question, candidates, top_k)
     if s.reranker_model:
-        trace.append({"step": "rerank", "detail": f"Cross-Encoder: {s.reranker_model}；融合后仅精排一次，重排分与 RRF 分独立保存"})
+        trace.append({"step": "rerank", "detail": f"精排（{s.reranker_provider}）: {s.reranker_model}；融合后仅精排一次，重排分与 RRF 分独立保存"})
     candidates = [candidate for candidate in candidates if
                   _coverage(retrieval_question, [candidate]) >= s.evidence_min_coverage]
     from app.services.evidence import definition_subject

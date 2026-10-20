@@ -178,6 +178,27 @@ python -m pip install -e "./backend[ml,evaluation]"
 
 Qdrant 集合标识包含嵌入提供方、模型、`RAG_EMBEDDING_BASE_URL` 与维度。切换嵌入服务时，应显式设置 `RAG_EMBEDDING_BASE_URL`，并对已有文档调用重新索引接口 `POST /api/documents/{id}/retry`，使文档向量与当前配置一致。旧模型集合不会参与新配置的查询；删除文档时会清理当前项目集合前缀下的历史模型向量。共享 Qdrant 实例时，不同部署应使用不同的 `RAG_QDRANT_COLLECTION_PREFIX`。
 
+### 百炼 API 精排（无需本地 CrossEncoder）
+
+本地启动编辑 `.env`，Compose 部署编辑 `.env.docker`：
+
+```dotenv
+RAG_RERANKER_PROVIDER=dashscope
+RAG_RERANKER_MODEL=qwen3-rerank
+RAG_RERANKER_API_URL=https://你的业务空间ID.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RAG_RERANKER_API_KEY=
+```
+
+请按百炼控制台填写对应业务空间、地域的完整原生 Rerank 接口地址，不能填写聊天的 `/compatible-mode/v1` 地址。
+`RAG_RERANKER_API_KEY` 留空时复用 `RAG_LLM_API_KEY`；密钥必须与精排端点所在地域匹配。
+可替换为账号已开通的其他兼容文本精排模型，例如 `qwen3.7-text-rerank`。
+该适配器只发送文本问题和候选片段，不需要安装 `ml` 依赖或下载本地权重。
+精排会产生额外 API 用量；接口失败时当前问答失败，不会静默忽略精排。
+
+配置后重启 API 和 Worker。只改变精排模型无需重新索引文档。
+关闭精排将 `RAG_RERANKER_MODEL` 留空；恢复本地模式设置 `RAG_RERANKER_PROVIDER=local`。
+协议参考：[百炼文本排序 API](https://help.aliyun.com/zh/model-studio/text-rerank-api)。
+
 ### Ragas 与历史答案复评
 
 `evaluation` 可选依赖固定使用 Ragas 0.3.9。启用 Ragas 需要真实生成模型和语义 Embedding；评分使用当前模型配置，并顺序执行。普通检索指标不要求 Ragas，参考答案词项召回率也不等同于忠实度或答案相关性。

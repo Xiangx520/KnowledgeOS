@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import threading
 import uuid
@@ -89,6 +90,35 @@ def reranker(name: str):
     return CrossEncoder(name, trust_remote_code=False)
 
 
+def rerank_scores(question: str, documents: list[str]) -> list[float]:
+    s = get_settings()
+    if s.reranker_provider == "local":
+        return [float(value) for value in reranker(s.reranker_model).predict(
+            [(question, text) for text in documents])]
+    import httpx
+
+    # Use the native DashScope rerank endpoint, not chat/completions.
+    response = httpx.post(s.reranker_api_url,
+        headers={"Authorization": "Bearer " + (s.reranker_api_key or s.llm_api_key)},
+        json={"model": s.reranker_model, "input": {"query": question, "documents": documents},
+              "parameters": {"top_n": len(documents)}}, timeout=s.model_timeout)
+    if not response.is_success:
+        # Do not expose provider response bodies, which can contain input text.
+        raise ValueError(f"精排 API 请求失败（HTTP {response.status_code}），请检查地址、密钥、模型和额度")
+    payload = response.json()
+    results = payload.get("output", payload).get("results", [])
+    scores = {}
+    for item in results:
+        index, value = item.get("index"), item.get("relevance_score")
+        if (type(index) is not int or not 0 <= index < len(documents) or index in scores
+                or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)):
+            raise ValueError("精排 API 返回了无效的文档索引或分数")
+        scores[index] = float(value)
+    if len(scores) != len(documents):
+        raise ValueError("精排 API 未返回全部候选文档的分数")
+    return [scores[index] for index in range(len(documents))]
+
+
 def rerank_candidates(question: str, candidates: list[dict], top_k: int, use_model: bool = True) -> list[dict]:
     from app.services.evidence import clean_pdf_text, clean_text, coverage, evidence_score, focus, quantity_subject
     candidates = [{**item, "text": clean_text(item["text"])} for item in candidates]
@@ -104,7 +134,7 @@ def rerank_candidates(question: str, candidates: list[dict], top_k: int, use_mod
                       item.get("document_name", "") + " " + item.get("knowledge_base_name", "")) >= .75]
     model = get_settings().reranker_model if use_model else ""
     if model and candidates:
-        values = reranker(model).predict([(question, c["text"]) for c in candidates])
+        values = rerank_scores(question, [c["text"] for c in candidates])
         for item, value in zip(candidates, values, strict=True):
             item["rerank_score"] = float(value)
         candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
