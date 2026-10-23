@@ -1,0 +1,18 @@
+{
+  "note": "Synthetic functional smoke cases, not business-quality evidence. Replace with held-out human-labeled conversations before drawing quality conclusions.",
+  "chunks": [
+    {"id":"lodging24","document_id":"travel24","document_name":"财务部2024年差旅规定","knowledge_base_id":"fixture","page":1,"text":"财务部2024年住宿报销上限为每晚500元。住宿报销需要提交发票。"},
+    {"id":"lodging23","document_id":"travel23","document_name":"财务部2023年差旅规定","knowledge_base_id":"fixture","page":1,"text":"财务部2023年住宿报销上限为每晚400元。住宿报销需要提交发票。"},
+    {"id":"transport","document_id":"transport","document_name":"交通规定","knowledge_base_id":"fixture","page":1,"text":"交通报销上限为每天100元。交通报销凭车票申请。"},
+    {"id":"redis","document_id":"redis","document_name":"Redis介绍","knowledge_base_id":"fixture","page":1,"text":"Redis是内存数据库，可以存储数据并通过持久化保存数据。"}
+  ],
+  "cases": [
+    {"question":"住宿报销上限是多少","expected_document_ids":["travel24","travel23"],"expected_subject":"住宿报销上限","expected_task_count":1},
+    {"question":"它的额度是多少","history":[{"role":"user","content":"住宿报销上限是多少"},{"role":"user","content":"继续说明"},{"role":"user","content":"继续说明"},{"role":"user","content":"继续说明"},{"role":"user","content":"继续说明"},{"role":"user","content":"继续说明"},{"role":"user","content":"继续说明"},{"role":"user","content":"继续说明"}],"expected_document_ids":["travel24","travel23"],"expected_subject":"住宿报销上限","conversation_key":"travel"},
+    {"question":"改成2023年的","history":[{"role":"user","content":"财务部2024年住宿报销上限是多少"}],"expected_document_ids":["travel23"],"expected_subject":"住宿报销上限","expected_constraints":["财务部","2023年"],"conversation_key":"travel"},
+    {"question":"什么是Redis","history":[{"role":"user","content":"财务部2024年住宿报销上限是多少"}],"expected_document_ids":["redis"],"expected_subject":"Redis"},
+    {"question":"它的额度是多少","expected_action":"clarify","expected_task_count":0},
+    {"question":"它的用途是什么","history":[{"role":"user","content":"什么是Redis"},{"role":"user","content":"住宿报销上限是多少"}],"expected_action":"clarify","expected_task_count":0},
+    {"question":"住宿报销上限是多少；交通报销上限是多少","expected_document_ids":["travel24","travel23","transport"],"expected_task_count":2}
+  ]
+}

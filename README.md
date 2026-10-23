@@ -88,6 +88,20 @@
 
 所有分块遵守 `RAG_CHUNK_SIZE`（默认 800 字符，包含重复表头和代码围栏）；超长表格按行拆分并重复表头，超长代码按行拆分并补全语言与围栏，超长单行继续细分。表头或围栏自身占满预算时退回保留内容的有界文本切分，该例外不保证表格/围栏完整。`RAG_CHUNK_OVERLAP`（默认 120）仅用于同一正文段内，不跨标题、表格或代码边界。已有索引不会自动变化；在文档列表点击“重新索引”后应用新切块逻辑，无需数据库迁移。
 
+聊天维护有来源的意图状态列表（最多 16 个主题），保存主题、约束和来源消息原话。状态快照随成功的用户消息写入 `run_metadata.intent_state`，与会话租约、幂等结果在同一事务提交；旧会话首次使用时从用户消息顺序重建，无需迁移。助手回答不作为需求事实写入状态。新主题重置条件；追问引用已有主题，年份修改和不限部门支持覆盖/取消；多个可能指代对象时反问。无模型时采用保守规则，无法确定相对年份或复杂长问题时要求明确范围。
+
+standard/agent 共用结构化意图计划，每项请求包含完整问题、检索表达、条件及消息来源。配置生成模型后，复杂请求调用一次模型解析 JSON，校验来源、主体、条件、否定和数字；无效输出回退规则。agent 仅对未充分召回的子任务补查一次完整问题，不再间隔抽词，不放宽条件。最多四项任务，每项独立分配 top-k，输出 `intent`、`task_results` 和阶段耗时；澄清设置 `needs_clarification=true`。部门/年份目前通过正文和文件名检查，**尚非精确发布元数据过滤**，可能保守漏召回；上传时间不当作发布日期。
+
+查询策略对照复用 `POST /api/evaluations/compare`，默认仍比较 dense/hybrid。设置 `kind=query_policy` 后比较冻结的旧拼接/抽词策略与新状态策略；`use_model` 默认 false（规则评测），显式 true 才调用模型并计入预算；`mode` 可选 standard/agent。每个 case 支持 `history`（role/content，最多 40 条）、`conversation_key`（按会话 bootstrap）、`expected_action`（retrieve/clarify）、`expected_document_ids` 或 `expected_chunk_ids`、`expected_subject`、`expected_constraints` 和 `expected_task_count`。示例：
+
+```json
+{"kind":"query_policy","use_model":false,"cases":[{"question":"它的额度是多少","history":[{"role":"user","content":"住宿报销上限是多少"}],"expected_subject":"住宿报销上限","expected_document_ids":["替换为当前授权文档ID"]},{"question":"它是什么","expected_action":"clarify"}]}
+```
+
+对照输出 Hit/Recall/MRR@5、状态/条件匹配、条件违规比例、动作正确率、P95 目标轮延迟、模型/检索调用数，以及修复/退化数量和按会话聚类的配对 bootstrap 区间。`retrieval_task_success` 仅表示动作正确且标注证据全部命中，不等于最终答案正确；无标签不计成功。多任务共用前五项评测窗口。普通 `/api/evaluations` 支持 history，并用实际回答引用评分，不再另用原始 query 检索冒充改写后的结果；message_id 复评继续使用原答案。
+
+运行 `backend/.venv/Scripts/python.exe scripts/benchmark-query-policy.py --output artifacts/query-policy-smoke.json` 可在隔离临时索引中复现随附合成样例，不连接生产服务。该报告仅验证功能路径；上线评估需使用真实语料、语义 embedding 和保留测试会话，固定索引/模型及预算，审核远距离指代、话题切换、条件更新、长问题去噪、多请求与澄清，并人工盲评答案正确性和完整性。不能用 hash/合成样例提升宣称业务收益。
+
 ### 🔎 多路召回与融合排序
 
 结合 **Qdrant Dense Retrieval** 与持久化中文 **BM25 倒排索引**，兼顾语义表达和关键词命中，通过 **RRF** 融合候选排名，并支持使用 **Cross-Encoder** 进一步精排。

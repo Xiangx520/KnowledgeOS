@@ -15,18 +15,19 @@ from app.services.retrieval import rerank_candidates, retrieve
 
 _cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _cache_lock = threading.Lock()
-PROMPT_VERSION = "grounded-v3.5-section-evidence"
+PROMPT_VERSION = "grounded-v4-intent-state"
 INSUFFICIENT_EVIDENCE = "当前知识库中没有足够证据回答这个问题。请补充相关文档，或调整问题后重试。"
 
 
-def _key(question: str, chunks: list[dict], top_k: int, mode: str, history: list[dict] | None = None) -> str:
+def _key(question: str, chunks: list[dict], top_k: int, mode: str, history: list[dict] | None = None,
+         intent_state: dict | None = None) -> str:
     s = get_settings()
     digest = hashlib.sha256()
     digest.update(json.dumps([question.strip(), top_k, mode, s.embedding_provider, s.embedding_model,
         s.llm_base_url, s.llm_model, s.llm_provider, s.embedding_base_url,
         bool(s.llm_api_key), s.reranker_model, s.reranker_provider, s.reranker_api_url,
         s.citation_verifier, s.verifier_model,
-        s.evidence_min_coverage, PROMPT_VERSION, history or []], ensure_ascii=False).encode())
+        s.evidence_min_coverage, PROMPT_VERSION, history or [], intent_state or {}], ensure_ascii=False).encode())
     if hasattr(chunks, "fingerprint"):
         digest.update(chunks.fingerprint().encode())
         return "rag:answer:" + digest.hexdigest()
@@ -184,17 +185,23 @@ def _budget_context(question: str, history: list[dict], candidates: list[dict]) 
 
 
 def answer_question(question: str, chunks: list[dict], top_k: int = 5, mode: str = "standard", history: list[dict] | None = None,
-                    emit=None, cancelled=None) -> dict:
+                    emit=None, cancelled=None, intent_state=None, message_id="current") -> dict:
+    from app.services.intent import plan_intent, read_state, rule_plan
+    from app.services.intent_retrieval import retrieve_plan
     from app.services.observability import stage
     from app.services.verification import CITATION_RE, normalize_citations, verify_answer
     timings = {}
     s = get_settings()
-    # History comes from the authorized server-side conversation, never client-provided roles.
-    history = [{"role": m["role"], "content": m["content"][:1600]} for m in (history or [])[-6:]
-        if m.get("role") in {"user", "assistant"}]
-    if not re.search(r"它|这个|那[么个]?|上述|继续|前面|再说|该(?:系统|方案|技术)", question):
-        history = []
-    key = _key(question, chunks, top_k, mode, history)
+    # Legacy callers can supply user history; assistant text never becomes state.
+    if intent_state is None:
+        state = read_state(None)
+        for index, message in enumerate(history or []):
+            if message.get("role") == "user":
+                state = rule_plan(message["content"], state, message.get("id", f"history-{index}")).state
+        intent_state = state.model_dump()
+    history = []
+    original_question = question
+    key = _key(question, chunks, top_k, mode, intent_state={"state": intent_state, "message_id": message_id})
     cached = _read_cache(key) if s.cache_ttl > 0 else None
     if cached:
         cached["cached"] = True
@@ -202,67 +209,43 @@ def answer_question(question: str, chunks: list[dict], top_k: int = 5, mode: str
         cached["trace"] = [{"step": "cache", "detail": "命中当前授权文档版本的答案缓存，未调用模型"}]
         return cached
     trace = [{"step": "scope", "detail": f"仅检索当前账户授权范围内的 {len(chunks)} 个片段"}]
-    retrieval_question = question
-    if history and re.search(r"它|这个|那[么个]?|上述|继续|前面|再说|该(?:系统|方案|技术)", question):
-        previous = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
-        if previous:
-            retrieval_question = previous[-1000:] + "\n追问：" + question
-            trace.append({"step": "context", "detail": "结合上一轮问题检索；历史记录仅来自当前账户会话"})
-    candidate_limit = min(20, max(top_k * 4, 10))
+    with stage("intent", timings):
+        plan = plan_intent(question, intent_state, message_id)
+    trace.append({"step": "intent", "detail": plan.model_dump()})
+    if cancelled and cancelled():
+        raise ValueError("请求已取消")
+    if not plan.tasks:
+        result = {"answer": plan.clarification, "citations": [], "trace": trace, "cached": False,
+            "provider": "clarification", "usage": {"model_calls": plan.model_calls},
+            "timings_ms": timings, "verification": {"mode": "clarification", "passed": True},
+            "abstained": False, "needs_clarification": True, "intent": plan.model_dump(), "task_results": []}
+        if emit:
+            emit("sources", [])
+        return result
+    question = retrieval_question = plan.complete_question
     with stage("retrieve", timings):
-        candidates = retrieve(retrieval_question, chunks, top_k=candidate_limit, rerank_results=False)
-    trace.append({"step": "retrieve", "detail": f"Qdrant dense + 中文 BM25 → RRF 融合，召回 {len(candidates)} 条证据"})
-    if mode == "agent":
-        trace.append({"step": "plan", "detail": "检索 → 词项覆盖启发式检查 → 有界改写 → 基于证据回答"})
-        # This grade is explicitly a lexical heuristic, never a confidence probability or RRF threshold.
-        coverage = _coverage(retrieval_question, candidates)
-        trace.append({"step": "grade", "detail": f"词项证据覆盖 {coverage:.0%}（启发式，不是正确率）"})
-        seen = {retrieval_question}
-        for attempt in range(min(s.agent_max_rewrites, 3)):
-            if coverage >= 0.65 or not chunks:
-                break
-            words = [w for w in tokenize(retrieval_question) if len(w.strip()) > 1]
-            # Rewrites are deterministic and use no extra LLM calls, keeping this bounded and auditable.
-            query = " ".join(words[attempt::2] or words).strip()
-            if not query or query in seen:
-                break
-            seen.add(query)
-            trace.append({"step": "rewrite", "detail": f"第 {attempt + 1} 次关键词改写：{query[:160]}"})
-            if cancelled and cancelled():
-                raise ValueError("请求已取消")
-            with stage("rewrite_retrieve", timings):
-                extra = retrieve(query, chunks, top_k=candidate_limit, rerank_results=False)
-            ranks = {}
-            by_id = {}
-            for ranking in (candidates, extra):
-                for rank, item in enumerate(ranking, 1):
-                    cid = item["chunk_id"]
-                    by_id[cid] = item
-                    ranks[cid] = ranks.get(cid, 0) + 1 / (60 + rank)
-            candidates = [by_id[cid] for cid in sorted(ranks, key=ranks.get, reverse=True)[:candidate_limit]]
-            coverage = _coverage(retrieval_question, candidates)
-        trace.append({"step": "grade", "detail": f"最终证据 {len(candidates)} 条，词项覆盖 {coverage:.0%}；结束检索循环"})
-        with stage("rerank", timings):
-            candidates = rerank_candidates(retrieval_question, candidates, top_k)
-    else:
-        with stage("rerank", timings):
-            candidates = rerank_candidates(retrieval_question, candidates, top_k)
+        candidates, task_results = retrieve_plan(plan, chunks, top_k, mode, retrieve, rerank_candidates,
+                                                 cancelled=cancelled)
+    trace.append({"step": "retrieve", "detail": task_results})
     if s.reranker_model:
         trace.append({"step": "rerank", "detail": f"精排（{s.reranker_provider}）: {s.reranker_model}；融合后仅精排一次，重排分与 RRF 分独立保存"})
-    candidates = [candidate for candidate in candidates if
-                  _coverage(retrieval_question, [candidate]) >= s.evidence_min_coverage]
     from app.services.evidence import definition_subject
-    if definition_subject(retrieval_question):
+    if len(plan.tasks) == 1 and definition_subject(retrieval_question):
         candidates = [item for item in candidates if _coverage(retrieval_question, [item]) >= .75]
-    if _coverage(retrieval_question, candidates) < s.evidence_min_coverage:
+    if len(plan.tasks) == 1 and _coverage(retrieval_question, candidates) < s.evidence_min_coverage:
         trace.append({"step": "abstain", "detail": "证据覆盖未达配置阈值；保守拒答，阈值需业务评测校准"})
         candidates = []
-    if hasattr(chunks, "expand_neighbors"):
+    if hasattr(chunks, "expand_neighbors") and len(plan.tasks) == 1 and not plan.tasks[0].constraints:
         candidates = chunks.expand_neighbors(candidates)
     from app.services.evidence import definition_context, section_context
-    candidates = section_context(question, candidates)
-    candidates = definition_context(question, candidates) if not any(c.get("section_title") for c in candidates) else candidates
+    if len(plan.tasks) == 1:
+        candidates = section_context(question, candidates)
+        candidates = definition_context(question, candidates) if not any(c.get("section_title") for c in candidates) else candidates
     history, candidates = _budget_context(question, history, candidates)
+    retained = {c["id"] for c in candidates}
+    for report in task_results:
+        report["chunk_ids"] = [cid for cid in report["chunk_ids"] if cid in retained]
+        report["status"] = "evidence_found" if report["chunk_ids"] else "insufficient_evidence"
     if hasattr(chunks, "db"):
         chunks.db.commit()
     trace.append({"step": "context_budget", "detail": f"按 {s.ollama_num_ctx} token 上下文窗口保守裁剪，保留 {len(candidates)} 条可引用证据"})
@@ -272,12 +255,15 @@ def answer_question(question: str, chunks: list[dict], top_k: int = 5, mode: str
         "dense_score": c.get("dense_score"), "bm25_score": c.get("bm25_score"),
         "revision_id": c.get("revision_id"), "source": c.get("source", "upload"),
         "context_chunk_ids": c.get("context_chunk_ids", [c["id"]])} for c in candidates]
-    provider, usage = "extractive", {"model_calls": 0}
+    provider, usage = "extractive", {"model_calls": plan.model_calls}
     verification = {"mode": "extractive", "passed": True, "semantic_checked": False, "model_calls": 0}
     if emit:
         emit("sources", citations)
     if not citations or not llm_ready():
-        answer = _extract(retrieval_question, citations)
+        answer = _extract(retrieval_question, citations) if len(plan.tasks) == 1 else "\n\n".join(
+            task.question + "\n" + _extract(task.question,
+                [{**c, "text": c["text"] if c["chunk_id"] in report["chunk_ids"] else ""} for c in citations])
+            for task, report in zip(plan.tasks, task_results, strict=True))
     else:
         from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -309,8 +295,10 @@ def answer_question(question: str, chunks: list[dict], top_k: int = 5, mode: str
                 "检索到无关资料时直接忽略，不要说明哪些其他话题无法回答；history或sources出现的其他主题不构成用户的新问题。"
                 "每句只引用实际支持该句的必要来源，不要机械标注所有检索结果。"
                 "如资料只有具体产品的描述，应明确用该产品作为实例，不能把其内部实现、开源属性、限制等泛化为整个概念的必备特征。"
-                "概念题优先解释用途和分布/访问方式，省略与问题无关的实现细节。证据不足时明确表示无法确认。用中文简洁回答，条款列表应保持完整。" + style_instruction),
-            HumanMessage(content=json.dumps({"question": question, "history": history, "sources": sources}, ensure_ascii=False)),
+                "概念题优先解释用途和分布/访问方式，省略与问题无关的实现细节。证据不足时明确表示无法确认。用中文简洁回答，条款列表应保持完整。"
+                "逐项回应 tasks；缺少某项或比较所需任一侧证据时明确说明，不能补猜。" + style_instruction),
+            HumanMessage(content=json.dumps({"question": question, "history": history, "sources": sources,
+                "tasks": task_results}, ensure_ascii=False)),
         ]
         with stage("generate", timings):
             if emit:
@@ -329,7 +317,7 @@ def answer_question(question: str, chunks: list[dict], top_k: int = 5, mode: str
                 metadata = getattr(response, "usage_metadata", None) or {}
         answer = final_text(CITATION_RE.sub(lambda m: m.group() if 1 <= int(m[1]) <= len(citations) else "", answer))
         provider = s.llm_model
-        usage = {**metadata, "model_calls": 1}
+        usage = {**metadata, "model_calls": 1 + plan.model_calls}
         refused = re.search(r"无法确认|无法回答|不能确定|没有足够证据|未(?:提供|提及|找到).{0,16}(?:信息|依据|规定)|没有.{0,12}(?:相关信息|相关规定)", answer)
         if refused and not CITATION_RE.search(answer):
             citations = []
@@ -394,9 +382,13 @@ def answer_question(question: str, chunks: list[dict], top_k: int = 5, mode: str
         citations = []
     from app.services.verification import compact_citations
     answer, citations = compact_citations(answer, citations)
+    if plan.clarification:
+        answer += "\n\n" + plan.clarification
     trace.append({"step": "generate", "detail": f"答案模式：{provider}；保留 {len(citations)} 条文档与页码引用"})
     result = {"answer": answer, "citations": citations, "trace": trace, "cached": False, "provider": provider,
-              "usage": usage, "timings_ms": timings, "verification": verification, "abstained": not citations}
+              "usage": usage, "timings_ms": timings, "verification": verification, "abstained": not citations,
+              "needs_clarification": bool(plan.clarification), "intent": plan.model_dump(),
+              "task_results": task_results, "original_question": original_question}
     if verification.get("passed"):
         _write_cache(key, result)
     return result

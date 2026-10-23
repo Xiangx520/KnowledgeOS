@@ -79,12 +79,19 @@ def run_chat(body, db, user, request, emit=None, cancelled=None):
         thread = threading.Thread(target=heartbeat, daemon=True)
         thread.start()
         try:
-            messages = db.scalars(select(Message).where(Message.conversation_id == conversation_id)
-                .order_by(Message.created_at.desc(), Message.id.desc()).limit(6)).all()
-            accessible = set(db.scalars(select(KnowledgeBase.id).where(allowed_kbs(user.id))).all())
-            history = [{"role": m.role, "content": m.content} for m in reversed(messages)
-                if not any(c.get("knowledge_base_id") not in accessible for c in (m.citations or []))]
-            kwargs = {"top_k": body.top_k, "mode": body.mode, "history": history}
+            from app.services.intent import read_state, rule_plan
+            latest = db.scalar(select(Message).where(Message.conversation_id == conversation_id, Message.role == "user")
+                .order_by(Message.created_at.desc(), Message.id.desc()).limit(1))
+            saved = (latest.run_metadata or {}).get("intent_state") if latest else None
+            state = read_state(saved)
+            if latest and saved is None:
+                # Bootstrap pre-upgrade conversations from user turns only, without model calls.
+                turns = db.scalars(select(Message).where(Message.conversation_id == conversation_id, Message.role == "user")
+                    .order_by(Message.created_at, Message.id).execution_options(yield_per=100))
+                for turn in turns:
+                    state = rule_plan(turn.content, state, turn.id).state
+            question_id = new_id()
+            kwargs = {"top_k": body.top_k, "mode": body.mode, "intent_state": state.model_dump(), "message_id": question_id}
             if emit is not None:
                 last_checked = 0
                 def secure_emit(event, value):
@@ -124,10 +131,12 @@ def run_chat(body, db, user, request, emit=None, cancelled=None):
             metadata = {"provider": result.get("provider"), "usage": result.get("usage", {}),
                 "prompt_version": PROMPT_VERSION, "embedding_model": settings.embedding_model,
                 "reranker_model": settings.reranker_model, "request_id": key,
-                "timings_ms": result.get("timings_ms", {}), "verification": result.get("verification", {})}
+                "timings_ms": result.get("timings_ms", {}), "verification": result.get("verification", {}),
+                "intent": result.get("intent"), "task_results": result.get("task_results", [])}
             last = db.scalar(select(func.max(Message.created_at)).where(Message.conversation_id == conversation_id))
             timestamp = max(utcnow(), last + timedelta(microseconds=1)) if last else utcnow()
-            db.add(Message(conversation_id=conversation_id, role="user", content=body.question, created_at=timestamp))
+            db.add(Message(id=question_id, conversation_id=conversation_id, role="user", content=body.question,
+                run_metadata={"intent_state": result.get("intent", {}).get("state", state.model_dump())}, created_at=timestamp))
             db.flush()
             assistant = Message(conversation_id=conversation_id, role="assistant", content=result["answer"],
                 citations=citations, trace=result.get("trace", []), run_metadata=metadata, created_at=timestamp + timedelta(microseconds=1))

@@ -493,6 +493,9 @@ def delete_conversation(conversation_id: str, db: DB, user: CurrentUser):
 
 
 def validate_expected_documents(db, user, cases, kb_ids):
+    chunk_ids = {cid for case in cases for cid in case.expected_chunk_ids}
+    if chunk_ids and set(scoped_chunks(db, user, kb_ids).hydrate(chunk_ids)) != chunk_ids:
+        raise HTTPException(422, "预期分块必须属于当前用户所选知识库的有效版本")
     expected = {doc for case in cases for doc in case.expected_document_ids}
     if not expected:
         return
@@ -541,12 +544,25 @@ def create_evaluation(body: EvaluationRequest, request: Request, db: DB, user: C
 
 
 @router.post("/evaluations/compare")
-def compare_evaluation(body: ComparisonRequest, db: DB, user: CurrentUser):
+def compare_evaluation(body: ComparisonRequest, request: Request, db: DB, user: CurrentUser):
     from app.services.evaluation import compare_retrieval
     chunks = scoped_chunks(db, user, body.knowledge_base_ids)
     validate_expected_documents(db, user, body.cases, body.knowledge_base_ids)
     try:
+        if body.kind == "query_policy":
+            from app.services.query_evaluation import compare_queries
+            if any(case.message_id for case in body.cases):
+                raise HTTPException(422, "策略对照请提供 history 和当前 question；message_id 仅用于存档答案复评")
+            consume(request.app.state.database, f"query-comparison:{user.id}", 5, 60)
+            if body.use_model:
+                from app.services.operations import effective_settings
+                settings = effective_settings(db, request.app.state.settings, user.id)
+                cost = sum(1 + sum(t.role == "user" for t in case.history) for case in body.cases)
+                consume(request.app.state.database, f"model-budget:{user.id}", settings.user_daily_model_requests, 86400, cost=cost)
+            return compare_queries([case.model_dump() for case in body.cases], chunks, body.use_model, body.mode)
         return compare_retrieval([case.model_dump() for case in body.cases], chunks)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:

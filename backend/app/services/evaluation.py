@@ -68,13 +68,14 @@ def evaluate_cases(cases: list[dict], chunks: list[dict], use_ragas: bool = Fals
             from app.services.embeddings import embed
         except ImportError as exc:
             raise ValueError("请先安装可选依赖：pip install -e '.[evaluation]'；Ragas 未安装") from exc
-    retrieval = _retrieval_metrics(cases, chunks, "hybrid")
     rows = []
-    for case, row in zip(cases, retrieval["results"], strict=True):
+    for case in cases:
         start = time.perf_counter()
         recorded = "recorded_answer" in case
         response = {"answer": case["recorded_answer"], "citations": case["recorded_citations"],
-            "provider": "recorded", "cached": True} if recorded else answer_question(case["question"], chunks)
+            "provider": "recorded", "cached": True} if recorded else answer_question(case["question"], chunks, history=case.get("history"))
+        row = _retrieval_metrics([{**case, "recorded_citations": response["citations"]}], chunks, "hybrid")["results"][0]
+        row["retrieval_basis"] = "recorded" if recorded else "live_intent"
         ref_tokens, answer_tokens = set(tokenize(case.get("reference", ""))), set(tokenize(response["answer"]))
         # Explicit lexical overlap, never named answer_relevancy or faithfulness.
         overlap = len(ref_tokens & answer_tokens) / len(ref_tokens) if ref_tokens else None
@@ -82,8 +83,14 @@ def evaluate_cases(cases: list[dict], chunks: list[dict], use_ragas: bool = Fals
             "contexts": [c["text"] for c in response["citations"]], "citations": response["citations"],
             "reference_token_recall": overlap, "provider": response["provider"], "cached": response["cached"],
             "from_history": recorded, "source_message_id": case.get("message_id"),
+            "intent": response.get("intent"), "task_results": response.get("task_results", []),
             "latency_ms": round((time.perf_counter() - start) * 1000, 2)})
-    metrics = {**retrieval["metrics"], "ragas_enabled": use_ragas, "history_replayed_cases": sum(r["from_history"] for r in rows),
+    labeled = [r for r in rows if r["hit_at_5"] is not None]
+    metrics = {"hit_at_5": statistics.mean(r["hit_at_5"] for r in labeled) if labeled else None,
+        "recall_at_5": statistics.mean(r["recall_at_5"] for r in labeled) if labeled else None,
+        "mrr_at_5": statistics.mean(r["reciprocal_rank"] for r in labeled) if labeled else None,
+        "labeled_cases": len(labeled), "total_cases": len(rows),
+        "ragas_enabled": use_ragas, "history_replayed_cases": sum(r["from_history"] for r in rows),
         "reference_token_recall": statistics.mean(r["reference_token_recall"] for r in rows if r["reference_token_recall"] is not None)
             if any(r["reference_token_recall"] is not None for r in rows) else None}
     if use_ragas:
