@@ -42,15 +42,30 @@ def quantity_subject(question):
 
 
 def clean_text(text):
+    from app.services.document_structure import fence_close, fence_open
+
     lines = []
-    for line in text.splitlines():
+    fence = None
+    for line in text.splitlines(keepends=True):
+        if fence:
+            lines.append(line)
+            if fence_close(line, fence):
+                fence = None
+            continue
+        opening = fence_open(line)
+        if opening:
+            fence = opening[0]
+            lines.append(line)
+            continue
         # Exclude exported Markdown navigation, retaining real prose with inline links.
         if re.match(r"^\s*(?:[-*+]\s*)?\[[^\]]+\]\([^)]*(?:\.md|%[0-9a-f]{2})[^)]*\)\s*$", line, re.I):
             continue
         line = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", line)
         line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line)
         lines.append(line)
-    return "\n".join(lines).strip()
+    result = "".join(lines)
+    # An unclosed fence owns the rest of the input, including trailing code space.
+    return result.lstrip() if fence else result.strip()
 
 
 def terms(question):

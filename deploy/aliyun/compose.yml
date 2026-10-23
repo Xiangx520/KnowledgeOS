@@ -1,0 +1,55 @@
+x-cloud-backend: &cloud-backend
+  build:
+    context: .
+    dockerfile: deploy/aliyun/Dockerfile
+    args:
+      PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+  mem_limit: 512m
+  cpus: 1.0
+  environment:
+    OPENBLAS_NUM_THREADS: "1"
+    OMP_NUM_THREADS: "1"
+    RAG_GLOBAL_ACTIVE_CHATS: "1"
+    RAG_MAX_ACTIVE_CHATS: "1"
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+services:
+  api:
+    <<: *cloud-backend
+  migrate:
+    <<: *cloud-backend
+  worker:
+    <<: *cloud-backend
+    environment:
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      RAG_WORKER_ROLE: all
+      RAG_GLOBAL_ACTIVE_CHATS: "1"
+      RAG_MAX_ACTIVE_CHATS: "1"
+  evaluation-worker:
+    profiles: [separate-evaluation]
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    mem_limit: 192m
+    command: [postgres, -c, shared_buffers=32MB, -c, max_connections=40, -c, work_mem=2MB]
+    logging: *logging
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    mem_limit: 64m
+    logging: *logging
+  qdrant:
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.14.1}
+    mem_limit: 192m
+    environment:
+      QDRANT__SERVICE__MAX_WORKERS: "1"
+      QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS: "1"
+    logging: *logging
+  web:
+    build:
+      context: .
+      dockerfile: deploy/aliyun/Dockerfile.web
+    mem_limit: 48m
+    logging: *logging

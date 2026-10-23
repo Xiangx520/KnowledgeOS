@@ -6,18 +6,13 @@ import io
 import json
 import re
 import zipfile
-from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 
 from app.config import get_settings
+from app.services.document_structure import ParsedBlock, ParsedPage, block_text, markdown_blocks
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".html", ".htm", ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".webp"}
-
-
-@dataclass(frozen=True)
-class ParsedPage:
-    text: str
-    page: int = 1
 
 
 def _decode(data: bytes) -> str:
@@ -125,44 +120,35 @@ def parse_document(path: Path, filename: str, progress=None) -> list[ParsedPage]
             if sum(i.file_size for i in archive.infolist()) > 200 * 1024 * 1024:
                 raise ValueError("DOCX 解压大小超过 200MiB")
         doc = Document(path)
-        lines = [p.text for p in doc.paragraphs if p.text.strip()]
-        for table in doc.tables:
-            lines.extend(" | ".join(c.text for c in row.cells) for row in table.rows)
+        from app.services.structured_parsers import docx_blocks
+
+        blocks = list(docx_blocks(doc))
         if get_settings().vision_model or get_settings().ocr_enabled:
             for index, relation in enumerate(doc.part.rels.values(), 1):
                 if "image" in relation.reltype and not relation.is_external:
-                    lines.append(f"[文档内嵌图片 {index}]\n" + _image_text(relation.target_part.blob))
+                    blocks.append(ParsedBlock(f"[文档内嵌图片 {index}]\n" + _image_text(relation.target_part.blob)))
         # DOCX has no stable rendered page count. Page 1 is a logical section, documented in UI.
-        return [ParsedPage("\n".join(lines))]
+        return [ParsedPage("\n".join(block_text(b) for b in blocks), blocks=tuple(blocks))]
     if ext in {".png", ".jpg", ".jpeg", ".webp"}:
         return [ParsedPage(_image_text(path.read_bytes()))]
     text = _decode(path.read_bytes())
     if ext == ".md":
         from app.services.evidence import clean_text
-        text = clean_text(text)
+        blocks = tuple(replace(b, text=clean_text(b.text)) if b.kind == "text" else b
+                       for b in markdown_blocks(text))
+        blocks = tuple(b for b in blocks if b.text.strip() or b.kind == "code")
+        return [ParsedPage("\n\n".join(block_text(b) for b in blocks), blocks=blocks)]
     if ext in {".html", ".htm"}:
-        from bs4 import BeautifulSoup
+        from app.services.structured_parsers import html_blocks
 
-        soup = BeautifulSoup(text, "html.parser")
-        for element in soup(["script", "style", "noscript"]):
-            element.decompose()
-        text = soup.get_text("\n", strip=True)
+        blocks = html_blocks(text)
+        return [ParsedPage("\n".join(block_text(b) for b in blocks), blocks=blocks)]
     if ext == ".json":
         text = json.dumps(json.loads(text), ensure_ascii=False, indent=2)
     return [ParsedPage(text)]
 
 
 def chunk_pages(pages: list[ParsedPage]) -> list[dict]:
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from app.services.splitting import chunk_pages as split_pages
 
-    s = get_settings()
-    splitter = RecursiveCharacterTextSplitter(chunk_size=s.chunk_size, chunk_overlap=s.chunk_overlap,
-        separators=["\n\n", "\n", "。", "！", "？", ". ", " ", ""], length_function=len)
-    chunks = []
-    for page in pages:
-        for text in splitter.split_text(page.text.replace("\x00", "").strip()):
-            if text.strip():
-                chunks.append({"text": text, "page": page.page, "ordinal": len(chunks)})
-    if not chunks:
-        raise ValueError("文档没有可检索文本；扫描件请开启 OCR/视觉模型")
-    return chunks
+    return split_pages(pages)

@@ -116,6 +116,28 @@ def test_upload_ingestion_deduplication_scope_and_cleanup(client):
     assert client.delete("/api/knowledge-bases/" + other_kb, headers=other).status_code == 204
 
 
+def test_mixed_structure_upload_preview_and_retrieval(client):
+    owner = register(client)
+    kb = create_kb(client, owner)
+    markdown = ("# 报销制度\n员工出差住宿每晚报销上限500元。\n\n"
+                "| 项目 | 额度 |\n| --- | --- |\n| 住宿 | 500元 |\n\n"
+                "## 示例\n```python\n    limit = 500\n    print(limit)\n```\n")
+    uploaded = upload(client, owner, kb, content=markdown.encode(), filename="mixed.md")
+    assert wait_job(client, owner, uploaded["job_id"])["status"] == "completed"
+    doc_id = uploaded["document"]["id"]
+    response = client.get(f"/api/documents/{doc_id}/chunks", headers=owner)
+    assert response.status_code == 200
+    chunks = response.json()
+    assert [c["ordinal"] for c in chunks] == list(range(len(chunks)))
+    assert any(c["text"].startswith("| 项目 | 额度 |") for c in chunks)
+    assert any(c["text"].startswith("```python\n    limit = 500") for c in chunks)
+    assert all(c["page"] == 1 and len(c["text"]) <= 800 for c in chunks)
+    answer = client.post("/api/chat", headers=owner, json={
+        "question": "出差住宿报销上限是多少", "knowledge_base_ids": [kb]}).json()
+    assert answer["citations"] and "500" in answer["answer"]
+    assert all(c["document_id"] == doc_id for c in answer["citations"])
+
+
 def test_upload_validation_failed_job_retry_and_durable_recovery(client):
     headers = register(client)
     kb = create_kb(client, headers)
