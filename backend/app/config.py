@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     ocr_enabled: bool = False
     chunk_size: int = Field(default=800, ge=100, le=10000)
     chunk_overlap: int = Field(default=120, ge=0)
+    context_enrichment_enabled: bool = False
+    context_enrichment_max_calls: int = Field(default=16, ge=0, le=256)
+    context_enrichment_max_bytes: int = Field(default=12000, ge=1024, le=32000)
+    context_enrichment_timeout: int = Field(default=30, ge=5, le=120)
     cache_ttl: int = Field(default=3600, ge=0)
     agent_max_rewrites: int = Field(default=2, ge=0, le=5)
     worker_poll_seconds: float = Field(default=2.0, gt=0)

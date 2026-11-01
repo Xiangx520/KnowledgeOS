@@ -54,6 +54,8 @@ API 负责账户、知识库、文档与对话接口；Worker 执行解析和索
 
 ## 文档生命周期
 
+不规范外部文档的基础质量门禁、待审核状态和可选原文语境增强，见[解析到切片入库流程](ingestion-flow.md)。该页描述最新实现及配置边界。
+
 上传采用两层限额：ASGI 层限制 multipart 请求体，处理函数以 1 MiB 分块累计文件大小，默认接受不超过 50 MiB 的文件。原文件使用 UUID 路径保存，文件名保留为展示信息；下载与解析均校验路径处于 uploads 目录。SHA256 在知识库内去重，避免重复摄取。
 
 [解析服务](../backend/app/services/parsing.py)支持 TXT、Markdown、CSV、JSON、HTML、PDF、DOCX、PNG、JPG/JPEG 和 WebP。文本兼容 UTF-8、GB18030 等编码；HTML 清理脚本与样式；DOCX 提取段落、表格及按配置启用的内嵌图片转录。切块默认使用 800 字符窗口、120 字符重叠，并保存文档 ID、页码和顺序。

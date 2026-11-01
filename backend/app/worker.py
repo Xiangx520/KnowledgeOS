@@ -71,8 +71,10 @@ def _heartbeat(database, settings, job_id, lease, done):
 
 
 def process_job(database, settings, job_id):
+    from app.services.context_enrichment import enrich_chunks, retrieval_text
     from app.services.corpus import term_rows
     from app.services.parsing import chunk_pages, parse_document
+    from app.services.quality import NeedsReview, prepare_pages, validate_chunks
     from app.services.retrieval import index_chunks
     lease = _claim(database, settings, job_id)
     if not lease:
@@ -104,17 +106,24 @@ def process_job(database, settings, job_id):
         if not path.is_relative_to((settings.data_dir / "uploads").resolve()):
             raise ValueError("文件存储路径不在 uploads 目录内")
         def report(processed, total, stage="生成向量"):
+            page_stage = stage not in {"生成向量", "补充片段语境"}
+            progress = ((50 + int(35 * processed / max(total, 1))) if stage == "生成向量" else
+                        (35 + int(15 * processed / max(total, 1))) if stage == "补充片段语境" else
+                        (2 + int(30 * processed / max(total, 1))))
             with database.session() as db:
                 changed = db.execute(update(IngestionJob).where(IngestionJob.id == job_id,
                     IngestionJob.lease_token == lease, IngestionJob.status == "processing").values(
-                    stage=stage, processed_pages=processed if stage != "生成向量" else IngestionJob.processed_pages,
-                    total_pages=total if stage != "生成向量" else IngestionJob.total_pages,
-                    progress=(35 + int(50 * processed / max(total, 1))) if stage == "生成向量" else
-                        (2 + int(30 * processed / max(total, 1))), updated_at=utcnow()))
+                    stage=stage, processed_pages=processed if page_stage else IngestionJob.processed_pages,
+                    total_pages=total if page_stage else IngestionJob.total_pages,
+                    progress=progress, updated_at=utcnow()))
                 db.commit()
                 if not changed.rowcount:
                     raise ValueError("任务已取消、删除或租约已变化")
-        parsed = chunk_pages(parse_document(path, filename, progress=report))
+        pages, quality_report = prepare_pages(parse_document(path, filename, progress=report))
+        report(len(pages), len(pages), "检查解析与切块质量")
+        parsed = chunk_pages(pages)
+        validate_chunks(parsed, settings.chunk_size)
+        quality_report["enrichment"] = enrich_chunks(parsed, settings, progress=report)
         indexed = [{"id": str(uuid.uuid5(uuid.UUID(revision_id), str(item["ordinal"]))), "document_id": document_id, "document_name": filename,
             "knowledge_base_id": kb_id, "revision_id": revision_id, **item} for item in parsed]
 
@@ -144,12 +153,14 @@ def process_job(database, settings, job_id):
             old = doc.active_revision_id
             db.execute(delete(Chunk).where(Chunk.document_id == document_id, Chunk.revision_id == revision_id))
             for item in indexed:
-                length, terms = term_rows(item["id"], item["text"])
+                length, terms = term_rows(item["id"], retrieval_text(item))
                 db.add(Chunk(id=item["id"], document_id=document_id, revision_id=revision_id, text=item["text"],
-                             page=item.get("page"), ordinal=item["ordinal"], token_count=length))
+                             page=item.get("page"), ordinal=item["ordinal"], token_count=length,
+                             context_summary=item["context_summary"], source_metadata=item["source_metadata"]))
                 db.flush()
                 db.add_all(terms)
             revision = db.get(DocumentRevision, revision_id)
+            revision.quality_report = quality_report
             revision.status, revision.chunk_count = "ready", len(indexed)
             doc.active_revision_id, doc.status, doc.chunk_count, doc.error = revision_id, "ready", len(indexed), None
             doc.stored_path, doc.name, doc.sha256, doc.size_bytes = (
@@ -172,14 +183,21 @@ def process_job(database, settings, job_id):
             job = db.get(IngestionJob, job_id)
             if owned.rowcount and job:
                 retry = transient and job.attempts < settings.worker_max_attempts
-                job.status, job.error, job.progress = "queued" if retry else "failed", type(exc).__name__ + ": " + str(exc)[:500], 0
+                review = isinstance(exc, NeedsReview)
+                job.status = "needs_review" if review else "queued" if retry else "failed"
+                job.error, job.progress = type(exc).__name__ + ": " + str(exc)[:500], 0
+                if review:
+                    job.stage = "待人工审核：请查看版本质量报告或上传清晰文件"
                 job.available_at = utcnow() + timedelta(seconds=2 ** job.attempts) if retry else None
                 job.lease_token = job.lease_expires_at = None
                 doc, revision = db.get(Document, document_id), db.get(DocumentRevision, revision_id) if revision_id else None
                 if doc:
-                    doc.status, doc.error = ("queued" if retry else "ready" if doc.active_revision_id else "failed"), job.error
+                    doc.status = "queued" if retry else "ready" if doc.active_revision_id else "needs_review" if review else "failed"
+                    doc.error = job.error
                 if revision:
-                    revision.status = "queued" if retry else "failed"
+                    revision.status = "needs_review" if review else "queued" if retry else "failed"
+                    if review:
+                        revision.quality_report = exc.report
                 db.commit()
     finally:
         done.set()

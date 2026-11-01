@@ -170,7 +170,8 @@ def get_document(db, user, document_id, action="read"):
 def versions(document_id: str, db: DB, user: CurrentUser):
     doc = get_document(db, user, document_id)
     return [{"id": rev.id, "name": rev.name, "sha256": rev.sha256, "size_bytes": rev.size_bytes,
-        "status": rev.status, "active": rev.id == doc.active_revision_id, "created_at": rev.created_at}
+        "status": rev.status, "active": rev.id == doc.active_revision_id, "created_at": rev.created_at,
+        "quality_report": rev.quality_report}
         for rev in db.scalars(select(DocumentRevision).where(DocumentRevision.document_id == document_id)
         .order_by(DocumentRevision.created_at.desc()).limit(100))]
 
@@ -198,7 +199,7 @@ def restore_version(document_id: str, revision_id: str, request: Request, db: DB
     doc = get_document(db, user, document_id, "write")
     from app.services.lifecycle import reserve_ingestion
     reserve_ingestion(db, user, doc.knowledge_base_id, request.app.state.settings)
-    if doc.status not in {"ready", "failed"}:
+    if doc.status not in {"ready", "failed", "needs_review"}:
         raise HTTPException(409, "已有更新任务正在处理")
     rev = db.get(DocumentRevision, revision_id)
     if not rev or rev.document_id != document_id:

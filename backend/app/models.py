@@ -77,6 +77,8 @@ class Chunk(Base):
     ordinal: Mapped[int] = mapped_column(Integer)
     revision_id: Mapped[str | None] = mapped_column(String(36), index=True)
     token_count: Mapped[int] = mapped_column(Integer, default=0)
+    context_summary: Mapped[str] = mapped_column(Text, default="")
+    source_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class IngestionJob(Base):
@@ -188,6 +190,7 @@ class DocumentRevision(Base):
     size_bytes: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="queued")
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    quality_report: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

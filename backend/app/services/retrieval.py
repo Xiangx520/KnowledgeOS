@@ -39,6 +39,7 @@ def point_id(chunk_id: str) -> str:
 
 
 def index_chunks(chunks: list[dict], write_fence=None, progress=None) -> None:
+    from app.services.context_enrichment import retrieval_text
     if not chunks:
         return
     with _lock if not get_settings().qdrant_url else nullcontext():
@@ -52,7 +53,7 @@ def index_chunks(chunks: list[dict], write_fence=None, progress=None) -> None:
             if progress:
                 progress(offset, len(chunks))
             batch = chunks[offset:offset + 64]
-            vectors = embed([c["text"] for c in batch])
+            vectors = embed([retrieval_text(c) for c in batch])
             points = [models.PointStruct(id=point_id(c["id"]), vector=v, payload={
                 "chunk_id": c["id"], "document_id": c["document_id"], "knowledge_base_id": c["knowledge_base_id"],
                 "revision_id": c.get("revision_id"),

@@ -255,7 +255,7 @@ async def upload_document(request: Request, db: DB, user: CurrentUser,
     replacing = own_document(db, user, document_id, "write") if document_id else None
     if replacing and replacing.knowledge_base_id != kb.id:
         raise HTTPException(422, "文档不属于所选知识库")
-    if replacing and replacing.status not in {"ready", "failed"}:
+    if replacing and replacing.status not in {"ready", "failed", "needs_review"}:
         raise HTTPException(409, "已有文档任务正在运行")
     filename = Path((file.filename or "").replace("\\", "/")).name[:255]
     suffix = Path(filename).suffix.lower()
@@ -288,7 +288,7 @@ async def upload_document(request: Request, db: DB, user: CurrentUser,
         reserve_ingestion(db, user, knowledge_base_id, settings, size)
         if replacing:
             db.refresh(replacing)
-            if replacing.status not in {"ready", "failed"}:
+            if replacing.status not in {"ready", "failed", "needs_review"}:
                 raise HTTPException(409, "已有文档任务正在运行")
         document = replacing or Document(knowledge_base_id=knowledge_base_id, name=filename, stored_path=str(target),
                             sha256=digest.hexdigest(), size_bytes=size, status="queued")
@@ -353,14 +353,18 @@ def retry_document(document_id: str, request: Request, db: DB, user: CurrentUser
     document = own_document(db, user, document_id, "write")
     from app.services.lifecycle import reserve_ingestion
     reserve_ingestion(db, user, document.knowledge_base_id, request.app.state.settings)
-    if document.status not in {"failed", "ready"}:
-        raise HTTPException(409, "仅失败或已就绪的文档可以重新索引")
-    changed = db.execute(update(Document).where(Document.id == document_id, Document.status.in_(["failed", "ready"]))
+    if document.status not in {"failed", "ready", "needs_review"}:
+        raise HTTPException(409, "仅失败、待审核或已就绪的文档可以重新索引")
+    changed = db.execute(update(Document).where(Document.id == document_id, Document.status.in_(["failed", "ready", "needs_review"]))
                          .values(status="queued", error=None))
     if changed.rowcount != 1:
         raise HTTPException(409, "任务状态已变化，请刷新后重试")
-    revision = DocumentRevision(document_id=document_id, name=document.name, stored_path=document.stored_path,
-                                sha256=document.sha256, size_bytes=document.size_bytes)
+    last_job = db.scalar(select(IngestionJob).where(IngestionJob.document_id == document_id)
+                         .order_by(IngestionJob.created_at.desc()).limit(1))
+    reviewed = db.get(DocumentRevision, last_job.revision_id) if last_job and last_job.status == "needs_review" else None
+    source = reviewed or document
+    revision = DocumentRevision(document_id=document_id, name=source.name, stored_path=source.stored_path,
+                                sha256=source.sha256, size_bytes=source.size_bytes)
     db.add(revision)
     db.flush()
     job = IngestionJob(document_id=document_id, revision_id=revision.id)
@@ -374,7 +378,8 @@ def retry_document(document_id: str, request: Request, db: DB, user: CurrentUser
 @router.get("/documents/{document_id}/chunks")
 def document_chunks(document_id: str, db: DB, user: CurrentUser):
     document = own_document(db, user, document_id)
-    return [{"id": chunk.id, "text": chunk.text, "page": chunk.page, "ordinal": chunk.ordinal}
+    return [{"id": chunk.id, "text": chunk.text, "page": chunk.page, "ordinal": chunk.ordinal,
+             "context_summary": chunk.context_summary, "source_metadata": chunk.source_metadata}
             for chunk in db.scalars(select(Chunk).where(Chunk.document_id == document_id,
                 Chunk.revision_id == document.active_revision_id).order_by(Chunk.ordinal).limit(500)).all()]
 
@@ -385,7 +390,9 @@ def job_status(job_id: str, db: DB, user: CurrentUser):
         IngestionJob.id == job_id, allowed_kbs(user.id)))
     if job is None:
         raise HTTPException(404, "任务不存在")
+    revision = db.get(DocumentRevision, job.revision_id) if job.revision_id else None
     return {"id": job.id, "status": job.status, "progress": job.progress,
+            "quality_report": revision.quality_report if revision else {},
             "error": job.error, "document_id": job.document_id, "stage": job.stage,
             "processed_pages": job.processed_pages, "total_pages": job.total_pages}
 

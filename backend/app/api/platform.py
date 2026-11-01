@@ -130,7 +130,7 @@ def control_job(kind: Literal["ingestion", "evaluation", "cleanup"], job_id: str
     else:
         if row.status in {"processing", "running"} and row.lease_expires_at and row.lease_expires_at > utcnow():
             raise HTTPException(409, "任务仍在运行，请先取消再重试")
-        if row.status not in {"failed", "cancelled", "queued", "processing", "running"}:
+        if row.status not in {"failed", "needs_review", "cancelled", "queued", "processing", "running"}:
             raise HTTPException(409, "已完成任务无需重试；更新文档请使用重新索引")
         if kind == "ingestion":
             if not doc:

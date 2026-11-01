@@ -92,19 +92,20 @@ def llm_ready() -> bool:
     return bool(s.llm_model and (s.llm_provider == "ollama" or s.llm_api_key))
 
 
-def configured_llm(model_name: str | None = None):
+def configured_llm(model_name: str | None = None, *, timeout=None, max_output_tokens=None, max_retries=1):
     from langchain_openai import ChatOpenAI
     s = get_settings()
     if s.llm_provider == "ollama":
         from langchain_ollama import ChatOllama
 
         return ChatOllama(model=model_name or s.llm_model, base_url=s.llm_base_url.rstrip("/").removesuffix("/v1"),
-            temperature=0, num_ctx=s.ollama_num_ctx, num_predict=s.max_output_tokens,
-            reasoning=False, client_kwargs={"timeout": s.model_timeout})
+            temperature=0, num_ctx=s.ollama_num_ctx, num_predict=max_output_tokens or s.max_output_tokens,
+            reasoning=False, client_kwargs={"timeout": timeout or s.model_timeout})
     if not (model_name or s.llm_model) or not s.llm_api_key:
         raise ValueError("需要配置 RAG_LLM_MODEL 和 RAG_LLM_API_KEY")
     return ChatOpenAI(model=model_name or s.llm_model, base_url=s.llm_base_url, api_key=s.llm_api_key,
-        temperature=0, timeout=s.model_timeout, max_retries=1, max_tokens=s.max_output_tokens)
+        temperature=0, timeout=timeout or s.model_timeout, max_retries=max_retries,
+        max_tokens=max_output_tokens or s.max_output_tokens)
 
 
 def _extract(question: str, citations: list[dict]) -> str:

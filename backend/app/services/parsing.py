@@ -92,7 +92,9 @@ def parse_document(path: Path, filename: str, progress=None) -> list[ParsedPage]
                         textpage.close()
                     # Prefer existing searchable text; vision is expensive and unnecessary on text pages.
                     has_images = any(page.get_objects(filter=[pypdfium2.raw.FPDF_PAGEOBJ_IMAGE]))
-                    if get_settings().pdf_vision_all_pages or (has_images and len(re.sub(r"\s", "", text)) < 40):
+                    from app.services.quality import NeedsReview, text_issues
+                    corrupt = any(i["severity"] == "blocking" for i in text_issues(text))
+                    if get_settings().pdf_vision_all_pages or corrupt or (has_images and len(re.sub(r"\s", "", text)) < 40):
                         if progress:
                             progress(index, total, "OCR / 视觉识别")
                         bitmap = page.render(scale=1.5)
@@ -100,8 +102,13 @@ def parse_document(path: Path, filename: str, progress=None) -> list[ParsedPage]
                         try:
                             buf = io.BytesIO()
                             image.save(buf, format="PNG")
-                            caption = _image_text(buf.getvalue())
-                            text = "\n\n".join(p for p in (text, caption) if p.strip())
+                            try:
+                                caption = _image_text(buf.getvalue())
+                            except ValueError as exc:
+                                raise NeedsReview({"status": "needs_review", "pages": [{"page": index + 1,
+                                    "issues": [{"code": "ocr_unavailable", "severity": "blocking"}]}]}) from exc
+                            # Bad text layers must not survive alongside recovered OCR.
+                            text = caption if corrupt else "\n\n".join(p for p in (text, caption) if p.strip())
                         finally:
                             image.close()
                             bitmap.close()

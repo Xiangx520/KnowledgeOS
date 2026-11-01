@@ -49,6 +49,7 @@ class CorpusScope:
         return {c.id: {"id": c.id, "document_id": d.id, "document_name": d.name,
             "knowledge_base_id": d.knowledge_base_id, "text": c.text, "page": c.page,
             "ordinal": c.ordinal, "revision_id": c.revision_id, "source": d.source,
+            "context_summary": c.context_summary, "source_metadata": c.source_metadata,
             "knowledge_base_name": name} for c, d, name in rows}
 
     def sparse(self, question, limit):
