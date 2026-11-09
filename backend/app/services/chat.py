@@ -15,6 +15,18 @@ from app.services.admission import capacity, consume
 from app.services.corpus import CorpusScope
 
 
+def citation_chunk_ids(result):
+    """All chunks actually exposed, including merged neighbour context for agent answers."""
+    ids = set()
+    agent_loop = (result.get("agent") or {}).get("effective_mode") == "agent_loop"
+    for citation in result.get("citations", []):
+        if citation.get("chunk_id"):
+            ids.add(citation["chunk_id"])
+        if agent_loop:
+            ids.update(citation.get("context_chunk_ids") or [])
+    return ids
+
+
 def run_chat(body, db, user, request, emit=None, cancelled=None):
     from app.services.answering import PROMPT_VERSION, answer_question
     settings, database = request.app.state.settings, request.app.state.database
@@ -34,8 +46,9 @@ def run_chat(body, db, user, request, emit=None, cancelled=None):
         if existing.status == "completed":
             result = existing.result
             citations = result.get("citations", [])
-            allowed = scope.hydrate([c["chunk_id"] for c in citations])
-            if any(c["chunk_id"] not in allowed for c in citations):
+            ids = citation_chunk_ids(result)
+            allowed = scope.hydrate(list(ids))
+            if any(chunk_id not in allowed for chunk_id in ids):
                 raise HTTPException(409, "该请求的证据版本或授权已变化，请使用新的请求 ID")
             return {**result, "idempotent_replay": True}
         if existing.status == "running" and existing.expires_at > utcnow():
@@ -44,7 +57,8 @@ def run_chat(body, db, user, request, emit=None, cancelled=None):
         db.commit()
     consume(database, f"chat:{user.id}", settings.chat_rate_per_minute)
     consume(database, f"model-budget:{user.id}", settings.user_daily_model_requests, 86400)
-    lease, ttl = new_id(), settings.model_timeout * 10 + 180
+    lease = new_id()
+    ttl = max(settings.model_timeout * 10 + 180, settings.agent_deadline_seconds + 300)
     with capacity(database, "global", settings.global_active_chats, ttl), capacity(database, user.id, settings.max_active_chats, ttl):
         run = ChatRequestRun(user_id=user.id, request_key=key, body_hash=digest,
                              expires_at=utcnow() + timedelta(seconds=ttl))
@@ -91,7 +105,28 @@ def run_chat(body, db, user, request, emit=None, cancelled=None):
                 for turn in turns:
                     state = rule_plan(turn.content, state, turn.id).state
             question_id = new_id()
-            kwargs = {"top_k": body.top_k, "mode": body.mode, "intent_state": state.model_dump(), "message_id": question_id}
+
+            def agent_guard():
+                """Fresh session/authorization/version probe before every tool."""
+                with database.session() as guard_db:
+                    login = guard_db.get(AuthSession, request.state.session_id)
+                    actor = guard_db.get(User, user.id)
+                    if not login or login.revoked or login.expires_at <= utcnow() or actor.disabled:
+                        raise HTTPException(401, "登录状态已被撤销")
+                    accessible = set(guard_db.scalars(select(KnowledgeBase.id).where(allowed_kbs(user.id))).all())
+                    if set(scope.kb_ids) - accessible:
+                        raise HTTPException(403, "知识库权限已变化，已停止生成")
+                    fresh_scope = CorpusScope(guard_db, actor, body.knowledge_base_ids)
+                    return fresh_scope.fingerprint()
+
+            def agent_charge_model_call():
+                consume(database, f"model-budget:{user.id}", settings.user_daily_model_requests, 86400)
+
+            kwargs = {"top_k": body.top_k, "mode": body.mode, "intent_state": state.model_dump(),
+                      "message_id": question_id, "settings": settings,
+                      "agent_guard": agent_guard, "agent_charge_model_call": agent_charge_model_call,
+                      "agent_policy": getattr(request.app.state, "agent_policy", None),
+                      "agent_verifier": getattr(request.app.state, "agent_verifier", None)}
             if emit is not None:
                 last_checked = 0
                 def secure_emit(event, value):
@@ -118,9 +153,9 @@ def run_chat(body, db, user, request, emit=None, cancelled=None):
             if not login or login.revoked or login.expires_at <= utcnow() or actor.disabled:
                 raise HTTPException(401, "登录状态已被撤销")
             fresh_scope = CorpusScope(db, user, body.knowledge_base_ids)
-            citations = result.get("citations", [])
-            valid = fresh_scope.hydrate([c["chunk_id"] for c in citations])
-            if any(c["chunk_id"] not in valid for c in citations):
+            ids = citation_chunk_ids(result)
+            valid = fresh_scope.hydrate(list(ids))
+            if any(chunk_id not in valid for chunk_id in ids):
                 raise HTTPException(409, "证据版本或访问权限在回答过程中发生变化，请重新提问")
             owned = db.execute(update(Conversation).where(Conversation.id == conversation_id,
                 Conversation.lease_token == lease).values(lease_expires_at=utcnow() + timedelta(seconds=ttl)))
@@ -132,7 +167,9 @@ def run_chat(body, db, user, request, emit=None, cancelled=None):
                 "prompt_version": PROMPT_VERSION, "embedding_model": settings.embedding_model,
                 "reranker_model": settings.reranker_model, "request_id": key,
                 "timings_ms": result.get("timings_ms", {}), "verification": result.get("verification", {}),
-                "intent": result.get("intent"), "task_results": result.get("task_results", [])}
+                "intent": result.get("intent"), "task_results": result.get("task_results", []),
+                "agent": result.get("agent")}
+            citations = result.get("citations", [])
             last = db.scalar(select(func.max(Message.created_at)).where(Message.conversation_id == conversation_id))
             timestamp = max(utcnow(), last + timedelta(microseconds=1)) if last else utcnow()
             db.add(Message(id=question_id, conversation_id=conversation_id, role="user", content=body.question,

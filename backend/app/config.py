@@ -49,6 +49,24 @@ class Settings(BaseSettings):
     context_enrichment_timeout: int = Field(default=30, ge=5, le=120)
     cache_ttl: int = Field(default=3600, ge=0)
     agent_max_rewrites: int = Field(default=2, ge=0, le=5)
+    # Bounded agentic retrieval. Disabled by default; mode=agent falls back to
+    # the legacy intent-retrieval path when this is false or no model is ready.
+    agent_loop_enabled: bool = False
+    agent_max_steps: int = Field(default=6, ge=1, le=32)
+    agent_max_tool_calls: int = Field(default=8, ge=1, le=32)
+    agent_max_model_calls: int = Field(default=12, ge=1, le=64)
+    agent_max_total_tokens: int = Field(default=24000, ge=512)
+    agent_deadline_seconds: int = Field(default=120, ge=5, le=1800)
+    agent_max_evidence_chunks: int = Field(default=24, ge=1, le=100)
+    agent_max_dynamic_tasks: int = Field(default=8, ge=0, le=32)
+    agent_max_recovery_rounds: int = Field(default=1, ge=0, le=5)
+    agent_min_search_coverage: float = Field(default=0.25, ge=0, le=1)
+    agent_max_query_chars: int = Field(default=600, ge=32, le=4000)
+    agent_max_observation_chars: int = Field(default=6000, ge=400, le=32000)
+    agent_max_evidence_chars: int = Field(default=4000, ge=400, le=32000)
+    agent_max_ledger_chars: int = Field(default=48000, ge=4000, le=200000)
+    agent_generation_reserve_model_calls: int = Field(default=2, ge=1, le=4)
+    agent_generation_reserve_tokens: int = Field(default=1500, ge=256)
     worker_poll_seconds: float = Field(default=2.0, gt=0)
     job_lease_seconds: int = Field(default=600, ge=30)
     token_lifetime_seconds: int = Field(default=86400, ge=60)
@@ -99,6 +117,10 @@ class Settings(BaseSettings):
             raise ValueError("worker_role must be all, ingestion or evaluation")
         if self.oidc_issuer and (not self.oidc_issuer.startswith("https://") or not self.oidc_client_id):
             raise ValueError("OIDC requires an HTTPS issuer and client_id")
+        if self.agent_generation_reserve_model_calls > self.agent_max_model_calls:
+            raise ValueError("agent_generation_reserve_model_calls exceeds agent_max_model_calls")
+        if self.agent_generation_reserve_tokens >= self.agent_max_total_tokens:
+            raise ValueError("agent_generation_reserve_tokens must be smaller than agent_max_total_tokens")
         if self.environment.lower() == "production":
             if len(self.secret_key) < 32 or self.secret_key.startswith("development-only"):
                 raise ValueError("Production requires a unique RAG_SECRET_KEY of at least 32 characters")

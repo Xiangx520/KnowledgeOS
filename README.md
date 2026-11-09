@@ -90,7 +90,7 @@
 
 聊天维护有来源的意图状态列表（最多 16 个主题），保存主题、约束和来源消息原话。状态快照随成功的用户消息写入 `run_metadata.intent_state`，与会话租约、幂等结果在同一事务提交；旧会话首次使用时从用户消息顺序重建，无需迁移。助手回答不作为需求事实写入状态。新主题重置条件；追问引用已有主题，年份修改和不限部门支持覆盖/取消；多个可能指代对象时反问。无模型时采用保守规则，无法确定相对年份或复杂长问题时要求明确范围。
 
-standard/agent 共用结构化意图计划，每项请求包含完整问题、检索表达、条件及消息来源。配置生成模型后，复杂请求调用一次模型解析 JSON，校验来源、主体、条件、否定和数字；无效输出回退规则。agent 仅对未充分召回的子任务补查一次完整问题，不再间隔抽词，不放宽条件。最多四项任务，每项独立分配 top-k，输出 `intent`、`task_results` 和阶段耗时；澄清设置 `needs_clarification=true`。部门/年份目前通过正文和文件名检查，**尚非精确发布元数据过滤**，可能保守漏召回；上传时间不当作发布日期。
+standard/agent 共用结构化意图计划，每项请求包含完整问题、检索表达、条件及消息来源。配置生成模型后，复杂请求调用一次模型解析 JSON，校验来源、主体、条件、否定和数字；无效输出回退规则。传统 agent 仅对未充分召回的子任务补查一次完整问题，不再间隔抽词，不放宽条件；开启 `RAG_AGENT_LOOP_ENABLED` 后，agent 改用新的有界单 Agent 循环（见[实施说明](docs/agentic-rag-implementation.md)）。最多四项初始任务，每项独立分配 top-k，输出 `intent`、`task_results` 和阶段耗时；澄清设置 `needs_clarification=true`。部门/年份目前通过正文和文件名检查，**尚非精确发布元数据过滤**，可能保守漏召回；上传时间不当作发布日期。
 
 查询策略对照复用 `POST /api/evaluations/compare`，默认仍比较 dense/hybrid。设置 `kind=query_policy` 后比较冻结的旧拼接/抽词策略与新状态策略；`use_model` 默认 false（规则评测），显式 true 才调用模型并计入预算；`mode` 可选 standard/agent。每个 case 支持 `history`（role/content，最多 40 条）、`conversation_key`（按会话 bootstrap）、`expected_action`（retrieve/clarify）、`expected_document_ids` 或 `expected_chunk_ids`、`expected_subject`、`expected_constraints` 和 `expected_task_count`。示例：
 
@@ -116,7 +116,9 @@ standard/agent 共用结构化意图计划，每项请求包含完整问题、�
 
 ### 🤖 Agent 检索模式
 
-围绕“检索—证据检查—查询改写—生成”组织问答流程。在证据覆盖不足时进行有界关键词改写，对多轮候选合并去重，再统一精排。检索步骤与处理轨迹可在工作台查看。
+默认保留旧的“检索—证据检查—查询改写—生成”有界流程。设置 `RAG_AGENT_LOOP_ENABLED=true` 且配置模型后，`mode=agent` 使用有界单 Agent 检索循环：模型根据实际工具观察选择搜索、读取邻块、查找引用、回答、澄清或拒答；支持把第一跳发现的原文实体用于第二跳查询，并让核验发现的证据缺口触发有界补检索。步骤、工具、模型调用、token、时限和证据大小均受预算约束；撤权或版本变化失败关闭。关闭开关即可回退旧路径，standard 不受影响。检索动作、证据 ID、预算和停止原因可在工作台轨迹中查看。
+
+Agent 模式发布综合事实答案要求语义核验成功；仅配置 numeric 核验或核验器不可用时，会返回明确标注的原文摘录并显示降级原因。详细配置、验收结果和限制见[Agentic RAG 实施说明](docs/agentic-rag-implementation.md)。
 
 ### 🖼️ 多模态文档理解
 
@@ -299,6 +301,9 @@ rag-knowledge-assistant/
 | [部署指南](docs/deployment.md) | Docker、本地开发、模型接入与运维 |
 | [设计原则](docs/design.md) | 设计目标、技术取舍与相关开源项目 |
 | [评测与验证](docs/validation.md) | 自动化检查、模型链路与评测记录 |
+| [Agentic RAG 转化计划](docs/agentic-rag-migration-plan.md) | 分阶段实施、状态与工具契约、预算、兼容及验收门槛（P0—P4 已实施，默认关闭） |
+| [Agentic RAG 实施说明](docs/agentic-rag-implementation.md) | 实际实现、配置开关、验收结果、真实模型冒烟与当前限制 |
+| [Agentic RAG 执行提示词](docs/agentic-rag-execution-prompts.md) | 整体执行、分阶段执行和中断续做提示词 |
 
 ## License & Acknowledgements
 

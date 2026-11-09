@@ -3,15 +3,17 @@ export type KnowledgeBase = { id: string; name: string; description: string; cre
 export type Document = { id: string; knowledge_base_id: string; name: string; size_bytes: number; status: string; chunk_count: number; error?: string; created_at: string; job_id?: string; active_revision_id?: string; source?: string; expires_at?: string }
 export type Job = { id: string; status: string; progress: number; error?: string; document_id: string; stage?: string; processed_pages?: number; total_pages?: number }
 export type Chunk = { id: string; text: string; page: number | null; ordinal: number; context_summary?: string }
-export type Citation = { chunk_id: string; document_id: string; document_name: string; knowledge_base_id: string; page: number | null; text: string; score: number; revision_id?: string; source?: string }
+export type Citation = { chunk_id: string; document_id: string; document_name: string; knowledge_base_id: string; page: number | null; text: string; score: number; revision_id?: string; source?: string; evidence_id?: string; context_chunk_ids?: string[] }
 export type Trace = { step: string; detail: unknown }
 export type Message = { id: string; role: string; content: string; citations?: Citation[]; trace?: Trace[]; created_at?: string; pending?: boolean }
 export type Conversation = { id: string; title: string; created_at: string }
 export type EvaluationCase = { question: string; reference: string; expected_document_ids?: string[]; message_id?: string }
 export type Evaluation = { id: string; name: string; status: string; metrics: Record<string, unknown>; results: Record<string, unknown>[]; created_at: string; error?: string }
 export type Comparison = { dense: Record<string, unknown>; hybrid: Record<string, unknown>; relative_hit_rate_change: number | null }
-export type Runtime = { mode: string; embedding_provider: string; embedding_model?: string; llm_provider: string; llm_backend?: string; llm_model?: string; reranker: unknown; vector_store: unknown; queue: unknown; max_upload_mb: number; features: Record<string, unknown> }
-export type ChatResponse = { answer: string; citations: Citation[]; trace: Trace[]; cached: boolean; conversation_id: string; message_id: string; provider: string; usage: Record<string, unknown>; verification?: { mode: string; passed: boolean; semantic_checked?: boolean }; abstained?: boolean }
+export type AgentStep = { index: number; action: string; task_id?: string; evidence_ids?: string[]; reason_code?: string; empty?: boolean; ambiguous?: boolean; error?: string; model_calls?: number; tool_calls?: number; tokens?: number }
+export type AgentSummary = { version: string; effective_mode: 'agent_loop' | 'legacy_degraded'; status: string; stop_reason?: string | null; degraded_reason?: string; steps: AgentStep[]; budget: Record<string, unknown>; task_summary: { user_tasks?: number; dynamic_tasks?: number; satisfied?: number; blocked?: number }; recovery_rounds?: number; semantic_checked?: boolean; gaps?: { type: string; claim?: string; query?: string }[]; bindings?: { name: string; value: string; evidence_id: string }[] }
+export type Runtime = { mode: string; embedding_provider: string; embedding_model?: string; llm_provider: string; llm_backend?: string; llm_model?: string; reranker: unknown; vector_store: unknown; queue: unknown; max_upload_mb: number; agent?: { enabled: boolean; available: boolean; mode: string; semantic_verifier: boolean }; features: Record<string, unknown> }
+export type ChatResponse = { answer: string; citations: Citation[]; trace: Trace[]; cached: boolean; conversation_id: string; message_id: string; provider: string; usage: Record<string, unknown>; verification?: { mode: string; passed: boolean; semantic_checked?: boolean }; abstained?: boolean; agent?: AgentSummary }
 
 export const API_BASE = (import.meta.env.VITE_API_BASE || '/api').replace(/\/$/, '')
 export class ApiError extends Error {

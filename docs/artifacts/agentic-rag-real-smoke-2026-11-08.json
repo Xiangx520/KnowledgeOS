@@ -1,0 +1,197 @@
+{
+  "generated_at": "2026-11-08T05:55:10.407598+00:00",
+  "real_model": true,
+  "model": "qwen3.8-flash",
+  "provider": "openai",
+  "embedding": "hash",
+  "verifier": "llm",
+  "reranker": "disabled",
+  "cases": [
+    {
+      "ingestion": "approval_policy",
+      "status": "completed"
+    },
+    {
+      "ingestion": "authorization_table",
+      "status": "completed"
+    },
+    {
+      "id": "two_hop_role_dependency",
+      "status_code": 200,
+      "latency_ms": 59305.33,
+      "answer": "采购合同由区域负责人审批[1]。该角色的单笔采购合同审批上限为八十万元[2]。",
+      "citations": [
+        "approval_policy.md",
+        "authorization_table.md"
+      ],
+      "provider": "qwen3.8-flash",
+      "verification": {
+        "mode": "llm",
+        "passed": true,
+        "issues": [],
+        "semantic_checked": true,
+        "model_calls": 1,
+        "gaps": [],
+        "abstain": false,
+        "usage": {
+          "input_tokens": 692,
+          "output_tokens": 489,
+          "total_tokens": 1181,
+          "input_token_details": {
+            "cache_read": 0
+          },
+          "output_token_details": {
+            "reasoning": 373
+          }
+        },
+        "unsupported_claims": [],
+        "irrelevant_claims": [],
+        "supported_claims": [
+          "采购合同由区域负责人审批[2]。",
+          "该角色的单笔采购合同审批上限为八十万元[1]。"
+        ]
+      },
+      "agent": {
+        "effective_mode": "agent_loop",
+        "status": "completed",
+        "stop_reason": "completed",
+        "degraded_reason": "",
+        "budget": {
+          "steps": 2,
+          "tool_calls": 1,
+          "model_calls": 4,
+          "tokens": 8290,
+          "estimated_tokens": false,
+          "max_steps": 6,
+          "max_tool_calls": 8,
+          "max_model_calls": 12,
+          "max_total_tokens": 24000,
+          "deadline_seconds": 120,
+          "elapsed_seconds": 59.02
+        },
+        "task_summary": {
+          "user_tasks": 1,
+          "dynamic_tasks": 0,
+          "satisfied": 1,
+          "blocked": 0
+        },
+        "recovery_rounds": 0,
+        "semantic_checked": true,
+        "steps": [
+          {
+            "index": 1,
+            "action": "search",
+            "task_id": "t1",
+            "query": "采购合同由谁审批 审批角色 单笔采购合同审批上限",
+            "evidence_ids": [
+              "e1",
+              "e2",
+              "e3"
+            ],
+            "reason_code": "collect_evidence",
+            "empty": false,
+            "ambiguous": false,
+            "error": "",
+            "model_calls": 1,
+            "tool_calls": 1,
+            "tokens": 2782
+          },
+          {
+            "index": 2,
+            "action": "answer",
+            "task_id": "",
+            "query": "",
+            "evidence_ids": [
+              "e2",
+              "e3"
+            ],
+            "reason_code": "sufficient_evidence",
+            "empty": false,
+            "ambiguous": false,
+            "error": "",
+            "model_calls": 2,
+            "tool_calls": 1,
+            "tokens": 6251
+          }
+        ],
+        "bindings": [],
+        "gaps": []
+      }
+    },
+    {
+      "id": "no_evidence",
+      "status_code": 200,
+      "latency_ms": 13135.76,
+      "answer": "当前知识库中没有足够证据回答这个问题。缺少：所选任务没有可引用证据",
+      "citations": [],
+      "provider": "abstention",
+      "verification": {
+        "mode": "agent_abstain",
+        "passed": true,
+        "semantic_checked": false,
+        "model_calls": 0,
+        "gaps": []
+      },
+      "agent": {
+        "effective_mode": "agent_loop",
+        "status": "abstained",
+        "stop_reason": "insufficient_evidence",
+        "degraded_reason": "",
+        "budget": {
+          "steps": 2,
+          "tool_calls": 2,
+          "model_calls": 2,
+          "tokens": 5598,
+          "estimated_tokens": false,
+          "max_steps": 6,
+          "max_tool_calls": 8,
+          "max_model_calls": 12,
+          "max_total_tokens": 24000,
+          "deadline_seconds": 120,
+          "elapsed_seconds": 13.06
+        },
+        "task_summary": {
+          "user_tasks": 1,
+          "dynamic_tasks": 0,
+          "satisfied": 0,
+          "blocked": 0
+        },
+        "recovery_rounds": 0,
+        "semantic_checked": false,
+        "steps": [
+          {
+            "index": 1,
+            "action": "search",
+            "task_id": "t1",
+            "query": "量子计算机低温制冷机 冷却温度",
+            "evidence_ids": [],
+            "reason_code": "collect_evidence",
+            "empty": true,
+            "ambiguous": false,
+            "error": "",
+            "model_calls": 1,
+            "tool_calls": 1,
+            "tokens": 2791
+          },
+          {
+            "index": 2,
+            "action": "search",
+            "task_id": "t1",
+            "query": "量子计算机低温制冷机的冷却温度是多少？",
+            "evidence_ids": [],
+            "reason_code": "collect_evidence",
+            "empty": true,
+            "ambiguous": false,
+            "error": "",
+            "model_calls": 2,
+            "tool_calls": 2,
+            "tokens": 5598
+          }
+        ],
+        "bindings": [],
+        "gaps": []
+      }
+    }
+  ],
+  "note": "Bounded real-model smoke test on synthetic fixtures. It can demonstrate that the model chooses actions and that verification runs; it is not a paired quality evaluation."
+}

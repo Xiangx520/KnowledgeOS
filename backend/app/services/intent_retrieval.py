@@ -9,9 +9,10 @@ def constraint_match(task, candidate):
     return all((slot.value not in text) if slot.operator == "exclude" else (slot.value in text) for slot in task.constraints)
 
 
-def retrieve_plan(plan, chunks, top_k, mode, retrieve_fn, rerank_fn, cancelled=None, emit=None):
+def retrieve_plan(plan, chunks, top_k, mode, retrieve_fn, rerank_fn, cancelled=None, emit=None, settings=None):
     from app.config import get_settings
 
+    settings = settings or get_settings()
     selected, reports = {}, []
     limit = min(20, max(top_k * 4, 10))
     for index, task in enumerate(plan.tasks):
@@ -21,7 +22,7 @@ def retrieve_plan(plan, chunks, top_k, mode, retrieve_fn, rerank_fn, cancelled=N
         candidates = [c for c in candidates if constraint_match(task, c)]
         calls = 1
         # Retry the full independent question once, keeping every constraint.
-        if (mode == "agent" and get_settings().agent_max_rewrites > 0
+        if (mode == "agent" and settings.agent_max_rewrites > 0
                 and task.expression != task.question
                 and (not candidates or coverage(task.question, " ".join(c["text"] for c in candidates)) < .65)):
             if cancelled and cancelled():
@@ -32,7 +33,7 @@ def retrieve_plan(plan, chunks, top_k, mode, retrieve_fn, rerank_fn, cancelled=N
             candidates = list(by_id.values())
             calls += 1
         ranked = rerank_fn(task.question, candidates, top_k)
-        ranked = [c for c in ranked if coverage(task.question, c["text"]) >= get_settings().evidence_min_coverage]
+        ranked = [c for c in ranked if coverage(task.question, c["text"]) >= settings.evidence_min_coverage]
         report = {"task": index, "question": task.question, "expression": task.expression,
                   "constraints": [s.model_dump() for s in task.constraints], "retrieval_calls": calls,
                   "status": "evidence_found" if ranked else "insufficient_evidence",
